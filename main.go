@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"minio_demo/common"
+	"minio_demo/middleware"
 	"net/http"
 	"os"
 	"time"
@@ -28,16 +29,15 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 
 	mux := http.NewServeMux()
+	// mux.HandleFunc("/get_object", common.GetObject)
 
-	mux.HandleFunc("/put_object", common.PutObject)
-	mux.HandleFunc("/create_bucket", common.CreateBucket)
-	mux.HandleFunc("/remove_bucket", common.RemoveBucket)
-	mux.HandleFunc("/get_object", common.GetObject)
-
-	mux.Handle("/list_object", corsMiddleware(http.HandlerFunc(common.ListObjects)))
-	mux.Handle("/put_object_demo", corsMiddleware(http.HandlerFunc(common.PutObjectDemo)))
-	mux.Handle("/download", corsMiddleware(http.HandlerFunc(common.DownLoad)))
-	mux.Handle("/get_bucket_list", corsMiddleware(http.HandlerFunc(common.GetBucketList)))
+	mux.Handle("/create_bucket", middleware.Cors(http.HandlerFunc(common.CreateBucket)))
+	mux.Handle("/remove_bucket", middleware.Cors(http.HandlerFunc(common.RemoveBucket)))
+	mux.Handle("/put_object", middleware.Cors(http.HandlerFunc(common.PutObject)))
+	mux.Handle("/list_object", middleware.Cors(http.HandlerFunc(common.ListObjects)))
+	mux.Handle("/put_object_demo", middleware.Cors(http.HandlerFunc(common.PutObjectDemo)))
+	mux.Handle("/download", middleware.Cors(http.HandlerFunc(common.DownLoad)))
+	mux.Handle("/get_bucket_list", middleware.Cors(http.HandlerFunc(common.GetBucketList)))
 	server := &http.Server{
 		Addr:         "127.0.0.1:8800",
 		WriteTimeout: time.Second * 300,
