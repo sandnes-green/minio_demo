@@ -1,0 +1,10 @@
+log:
+  path: logs/logs.log
+host:
+  address: 127.0.0.1
+  port: 8800
+minio:
+  address: 192.168.3.13
+  port: 5000
+  accessKeyID: Fti93hglezVRP9JZ6LX4
+  secretAccessKey: oCGei0GU9W9DgDPIpjWiecpQlZrPgMX9D2eDE4nM

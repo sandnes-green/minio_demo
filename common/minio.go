@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"minio_demo/config"
 	"net/http"
 	"os"
 	"sort"
@@ -17,8 +18,7 @@ import (
 )
 
 var (
-	client *minio.Client
-	// is_exists_key map[string]bool
+	client        *minio.Client
 	is_exists_key map[string]map[string]bool
 	mu            sync.RWMutex
 	muxing        bool
@@ -51,7 +51,7 @@ type ObjectInfo struct {
 	StorageClass string `json:"storageClass"`
 }
 
-func init() {
+func InitMinio() {
 	muxing = false
 	is_exists_key = make(map[string]map[string]bool, 0)
 	client = InitMinioClient()
@@ -59,9 +59,9 @@ func init() {
 
 func InitMinioClient() *minio.Client {
 	// 基本的配置信息
-	endpoint := "192.168.3.13:5000"
-	accessKeyID := "Fti93hglezVRP9JZ6LX4"
-	secretAccessKey := "oCGei0GU9W9DgDPIpjWiecpQlZrPgMX9D2eDE4nM"
+	endpoint := config.ConfData.Minio.Address + ":" + strconv.Itoa(config.ConfData.Minio.Port)
+	accessKeyID := config.ConfData.Minio.AccessKeyID
+	secretAccessKey := config.ConfData.Minio.SecretAccessKey
 	minioClient, err := minio.New(endpoint, accessKeyID, secretAccessKey, false)
 	if err != nil {
 		log.Fatalf("初始化MinioClient错误：%s", err.Error())
@@ -332,7 +332,7 @@ func DownLoad(w http.ResponseWriter, r *http.Request) {
 }
 
 // 分片上传
-func PutObjectDemo(w http.ResponseWriter, r *http.Request) {
+func Upload(w http.ResponseWriter, r *http.Request) {
 	res := ResponseData{}
 	if err := r.ParseMultipartForm(32 << 20); err != nil { //32M
 		log.Printf("Cannot ParseMultipartForm, error: %v\n", err)
