@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"minio_demo/common"
 	"minio_demo/config"
@@ -14,7 +13,6 @@ import (
 
 func main() {
 	config.InitConfig()
-	fmt.Printf("conf===%+v\n", config.ConfData)
 	common.InitMinio()
 	mux := http.NewServeMux()
 	mux.Handle("/create_bucket", middleware.Cors(http.HandlerFunc(common.CreateBucket)))
