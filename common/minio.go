@@ -1,28 +1,33 @@
 package common
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"minio_demo/config"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/minio/minio-go"
 	"github.com/zeromicro/go-zero/rest/httpx"
+	"github.com/zituocn/logx"
 )
 
 var (
 	client        *minio.Client
 	is_exists_key map[string]map[string]bool
-	mu            sync.RWMutex
-	muxing        bool
+	muxing        map[string]bool
+
+	mu sync.RWMutex
 )
+
+type SrcInfo struct {
+	Etag string
+	Name string
+}
 
 type BucketInfo struct {
 	Name       string
@@ -52,8 +57,8 @@ type ObjectInfo struct {
 }
 
 func InitMinio() {
-	muxing = false
 	is_exists_key = make(map[string]map[string]bool, 0)
+	muxing = make(map[string]bool, 0)
 	client = InitMinioClient()
 }
 
@@ -64,11 +69,35 @@ func InitMinioClient() *minio.Client {
 	secretAccessKey := config.ConfData.Minio.SecretAccessKey
 	minioClient, err := minio.New(endpoint, accessKeyID, secretAccessKey, false)
 	if err != nil {
-		log.Fatalf("初始化MinioClient错误：%s", err.Error())
+		logx.Fatalf("初始化MinioClient错误：%s", err.Error())
 	} else {
-		log.Printf("Minio client start")
+		logx.Info("Minio client start")
 	}
 	return minioClient
+}
+
+// 创建桶
+func Test(w http.ResponseWriter, r *http.Request) {
+	x, err := redisdb.Incr("minio").Result()
+	fmt.Println("x==", x)
+	fmt.Println("err==", err)
+	x, err = redisdb.Incr("minio").Result()
+	fmt.Println("x==", x)
+	fmt.Println("err==", err)
+	var a int
+	str, _ := redisdb.Get("minio").Result()
+	fmt.Println("a==", a)
+	fmt.Println("str==", str)
+
+	redisdb.Set("minio", 1, 0)
+	x, err = redisdb.Incr("minio").Result()
+	fmt.Println("x==", x)
+	fmt.Println("err==", err)
+
+	redisdb.Get("minio").Scan(&a)
+	fmt.Println("a==1:", a == 1)
+
+	redisdb.Del("minio")
 }
 
 // 创建桶
@@ -77,13 +106,25 @@ func CreateBucket(w http.ResponseWriter, r *http.Request) {
 
 	err := client.MakeBucket(bucketname, "")
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalParamsError,
+			Msg:  "创建桶失败",
+		})
 		return
 	}
 	httpx.OkJson(w, ResponseData{
 		Code: CodeSuccess,
 		Msg:  "创建桶成功",
 	})
+}
+
+// 查询对象
+func GetObjectInfo(w http.ResponseWriter, r *http.Request) {
+	bucketname := r.PostFormValue("bucket_name")
+	objectname := r.PostFormValue("object_name")
+
+	info, _ := GetStatObject(bucketname, objectname)
+	httpx.OkJson(w, info)
 }
 
 // 展示桶列表
@@ -100,7 +141,11 @@ func GetBucketList(w http.ResponseWriter, r *http.Request) {
 		bucket_list = append(bucket_list, info)
 	}
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalParamsError,
+			Msg:  err.Error(),
+		})
+		return
 	}
 
 	httpx.OkJson(w, ResponseData{
@@ -110,35 +155,33 @@ func GetBucketList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// 桶是否存在
-func IsBuckets(name string) (bool, error) {
-	isExist, err := client.BucketExists(name)
-
-	if err != nil {
-		log.Printf("Check %s err:%s", name, err.Error())
-		return isExist, err
-	}
-	return isExist, nil
-}
-
 // 移除桶
 func RemoveBucket(w http.ResponseWriter, r *http.Request) {
 	bucketname := r.PostFormValue("bucket_name")
 	isExist, err := IsBuckets(bucketname)
 
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalParamsError,
+			Msg:  "Invalid params",
+		})
 		return
 	}
 
 	if !isExist {
-		httpx.Error(w, errors.New("bucket not found"))
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalParamsError,
+			Msg:  "Invalid params",
+		})
 		return
 	}
 
 	err = client.RemoveBucket(bucketname)
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalServerError,
+			Msg:  err.Error(),
+		})
 		return
 	}
 
@@ -155,7 +198,7 @@ func ListObjects(w http.ResponseWriter, r *http.Request) {
 	isExist, err := IsBuckets(bucketname)
 
 	if err != nil {
-		log.Println("IsBuckets error:", err)
+		logx.Error("IsBuckets error:", err.Error())
 		httpx.OkJson(w, ResponseData{
 			Code: CodeInternalParamsError,
 			Msg:  err.Error(),
@@ -164,7 +207,7 @@ func ListObjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isExist {
-		log.Println("bucket not found")
+		logx.Error("bucket not found")
 		httpx.OkJson(w, ResponseData{
 			Code: CodeInternalParamsError,
 			Msg:  "bucket not found",
@@ -176,17 +219,15 @@ func ListObjects(w http.ResponseWriter, r *http.Request) {
 	doneCh := make(chan struct{})
 	defer close(doneCh)
 
-	objectInfos := make([]ObjectInfo, 0)
+	objectInfos := make([]*FileSaveInfo, 0)
 
 	for message := range client.ListObjects(bucketname, objectname, true, doneCh) {
-		objectInfo := ObjectInfo{
-			Key:          message.Key,
+		objectInfo := &FileSaveInfo{
+			BucketName:   bucketname,
+			ObjectName:   message.Key,
 			LastModified: message.LastModified.Format("2006-01-02 15:04:05"),
 			Size:         message.Size,
-			ContentType:  message.ContentType,
-			Metadata:     message.Metadata,
-			Owner:        message.Owner,
-			StorageClass: message.StorageClass,
+			Md5:          removeBackslashAndQuotes(message.ETag),
 		}
 		objectInfos = append(objectInfos, objectInfo)
 	}
@@ -204,7 +245,10 @@ func GetObject(w http.ResponseWriter, r *http.Request) {
 	objectname := r.PostFormValue("object_name")
 	object, err := client.GetObject(bucketname, objectname, minio.GetObjectOptions{})
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalServerError,
+			Msg:  err.Error(),
+		})
 		return
 	}
 	defer func(object *minio.Object) {
@@ -217,17 +261,24 @@ func GetObject(w http.ResponseWriter, r *http.Request) {
 
 	localFile, err := os.Create("images/" + objectname)
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalServerError,
+			Msg:  err.Error(),
+		})
 		return
 	}
 	defer func(localFile *os.File) {
 		err := localFile.Close()
 		if err != nil {
+			httpx.Error(w, err)
 			return
 		}
 	}(localFile)
 	if _, err = io.Copy(localFile, object); err != nil {
-		httpx.Error(w, err)
+		httpx.OkJson(w, ResponseData{
+			Code: CodeInternalServerError,
+			Msg:  err.Error(),
+		})
 		return
 	}
 
@@ -235,41 +286,6 @@ func GetObject(w http.ResponseWriter, r *http.Request) {
 		Code: CodeSuccess,
 		Msg:  "success",
 	})
-}
-
-func PutObject1(w http.ResponseWriter, r *http.Request) {
-	reader, err := r.MultipartReader()
-
-	if err != nil {
-		log.Println("MultipartReader:", err)
-		return
-	}
-	bucketName := strings.Builder{}
-
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			log.Printf("error:%s\n", err.Error())
-			return
-		}
-
-		if part.FileName() == "" { // 普通表单字段
-
-			_, _ = io.Copy(&bucketName, part)
-			log.Printf("dist:%+v\n", bucketName)
-		} else { // 文件字段
-			n, err := client.PutObject(bucketName.String(), part.FileName(), part, -1, minio.PutObjectOptions{})
-			if err != nil {
-				log.Println("PutObject err=>", err)
-				return
-			}
-			log.Println("Successfully uploaded bytes: ", n)
-		}
-	}
 }
 
 func PutObject(w http.ResponseWriter, r *http.Request) {
@@ -284,18 +300,24 @@ func PutObject(w http.ResponseWriter, r *http.Request) {
 	for k := range mForm.File {
 		file, fileHeader, err := r.FormFile(k)
 		if err != nil {
-			httpx.Error(w, err)
+			httpx.OkJson(w, ResponseData{
+				Code: CodeInternalServerError,
+				Msg:  err.Error(),
+			})
 			return
 		}
 
 		defer file.Close()
 		n, err := client.PutObject(bucketName[0], fileHeader.Filename, file, fileHeader.Size, minio.PutObjectOptions{})
 		if err != nil {
-			httpx.Error(w, err)
+			httpx.OkJson(w, ResponseData{
+				Code: CodeInternalServerError,
+				Msg:  err.Error(),
+			})
 			return
 		}
 
-		log.Println("Successfully uploaded bytes: ", n)
+		logx.Info("Successfully uploaded bytes: ", n)
 	}
 	res.Code = CodeSuccess
 	res.Msg = "Successfully upload"
@@ -335,23 +357,13 @@ func DownLoad(w http.ResponseWriter, r *http.Request) {
 func Upload(w http.ResponseWriter, r *http.Request) {
 	res := ResponseData{}
 	if err := r.ParseMultipartForm(32 << 20); err != nil { //32M
-		log.Printf("Cannot ParseMultipartForm, error: %v\n", err)
+		logx.Errorf("Cannot ParseMultipartForm, error: %v\n", err)
 		res.Code = CodeInternalParamsError
 		res.Msg = CodeInternalParamsError.Msg()
 		httpx.OkJson(w, res)
 		return
 	}
-
-	if r.MultipartForm == nil {
-		log.Printf("MultipartForm is null\n")
-		res.Code = CodeInternalParamsError
-		res.Msg = CodeInternalParamsError.Msg()
-		httpx.OkJson(w, res)
-		return
-	}
-
 	mForm := r.MultipartForm
-
 	// 获取存储桶名
 	bucketname := mForm.Value["BucketName"][0]
 	// 获取文件md值
@@ -367,8 +379,15 @@ func Upload(w http.ResponseWriter, r *http.Request) {
 	// 文件总大小
 	totalSize := mForm.Value["totalSize"][0]
 	total_size, err := strconv.ParseInt(totalSize, 10, 64)
-
 	if err != nil {
+		res.Code = CodeInternalParamsError
+		res.Msg = "Parse Invalid total size"
+		httpx.OkJson(w, res)
+		return
+	}
+	total_chunks, err := strconv.Atoi(totalChunks)
+	if err != nil {
+		logx.Error("total_chunks parse err:", err)
 		res.Code = CodeInternalParamsError
 		res.Msg = CodeInternalParamsError.Msg()
 		httpx.OkJson(w, res)
@@ -376,58 +395,35 @@ func Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 查询上传记录
-	n, err := redisdb.Exists(identifier).Result()
+	info, err := GetInfoForIdentifier(identifier)
 	if err != nil {
-		log.Printf("err=%s\n", err.Error())
-	}
-
-	// 已查询到文件存储记录
-	if n == 1 {
-		result := &FileSaveInfo{}
-		// 查询redis是否有文件存放记录
-		err := redisdb.Get(identifier).Scan(result)
-		if err != nil {
-			res.Msg = err.Error()
-		} else {
-			objCh := make(chan struct{})
-			defer close(objCh)
-			// 查询系统内是否存在文件
-			ch := client.ListObjects(result.BucketName, result.ObjectName, true, objCh)
-			if val, ok := <-ch; ok {
-				res.Code = CodeSuccess
-				res.Msg = CodeSuccess.Msg()
-				res.Data = struct {
-					BucketName string
-					ObjectName string
-				}{
-					BucketName: result.BucketName,
-					ObjectName: result.ObjectName,
-				}
-				httpx.OkJson(w, res)
-				return
-			} else {
-				// 文件不存在，删除记录
-				log.Println("failed===", val)
-				// 删除map
-				delete(is_exists_key, identifier+"_"+chunkSize)
-				redisdb.Del(identifier)
-			}
-		}
-	}
-
-	// 检查桶
-	isExist, err := IsBuckets(bucketname)
-
-	if err != nil {
-		log.Println("failed===", err)
-		res.Code = CodeInternalParamsError
-		res.Msg = CodeInternalParamsError.Msg()
+		logx.Error("GetInfoForIdentifier:%s\n", err.Error())
+	} else {
+		res.Code = CodeSuccess
+		res.Msg = "GetInfoForIdentifier:文件已在系统内:秒传成功！"
+		res.Data = info
 		httpx.OkJson(w, res)
 		return
 	}
 
+	// 查询同名文件
+	info, err = GetFileSaveInfo(bucketname, filename)
+	if err != nil {
+		logx.Error("GetFileSaveInfo:", err.Error())
+	} else if identifier != info.Md5 {
+		filename = identifier + "-" + filename
+	} else if identifier == info.Md5 {
+		res.Code = CodeSuccess
+		res.Msg = "GetFileSaveInfo:文件已在系统内:秒传成功！"
+		res.Data = info
+		httpx.OkJson(w, res)
+		return
+	}
+
+	// 检查桶状态
+	isExist, _ := IsBuckets(bucketname)
 	if !isExist {
-		log.Println("err", errors.New("不存在的存储桶"))
+		logx.Error("err:检查桶状态：不存在的存储桶")
 		res.Code = CodeInternalParamsError
 		res.Msg = CodeInternalParamsError.Msg()
 		httpx.OkJson(w, res)
@@ -436,19 +432,8 @@ func Upload(w http.ResponseWriter, r *http.Request) {
 
 	// 已完成上传的大小
 	var have_uploaded_size int64 = 0
-
 	// 已完成上传的分片
 	var have_uploaded_count int64 = 0
-
-	total_chunks, err := strconv.Atoi(totalChunks)
-	if err != nil {
-		log.Println("err===", err)
-		res.Code = CodeInternalParamsError
-		res.Msg = CodeInternalParamsError.Msg()
-		httpx.OkJson(w, res)
-		return
-	}
-
 	doneCh := make(chan struct{})
 	defer close(doneCh)
 
@@ -456,9 +441,11 @@ func Upload(w http.ResponseWriter, r *http.Request) {
 	if _, ok := is_exists_key[identifier+"_"+chunkSize]; !ok {
 		is_exists_key[identifier+"_"+chunkSize] = make(map[string]bool)
 	}
+
 reUpload:
-	if is_exist, ok := is_exists_key[identifier+"_"+chunkSize][chunkNumber+".part"]; !ok || !is_exist {
-		log.Println("开始上传！")
+	_, err = GetInfoForIdentifier(identifier)
+	if is_exist, ok := is_exists_key[identifier+"_"+chunkSize][chunkNumber+".part"]; err != nil && (!ok || !is_exist) {
+		logx.Info("开始上传分片！")
 		for k := range mForm.File {
 			file, fileHeader, err := r.FormFile(k)
 			if err != nil {
@@ -476,18 +463,21 @@ reUpload:
 			}
 			// 标记上传分片
 			mu.Lock()
-			is_exists_key[identifier+"_"+chunkSize][chunkNumber+".part"] = true
+			if _, ok := is_exists_key[identifier+"_"+chunkSize]; !ok {
+				is_exists_key[identifier+"_"+chunkSize] = make(map[string]bool)
+				is_exists_key[identifier+"_"+chunkSize][chunkNumber+".part"] = true
+			}
 			mu.Unlock()
 
-			log.Println("Successfully uploaded bytes: ", n)
+			logx.Info("Successfully uploaded bytes: ", n)
 		}
 	}
-
-	shardPaths := make([]string, 0)
+	shardPaths := make([]SrcInfo, 0)
 	// 文件上传完成
 	finished := false
 	// 检查当前分片是否成功上传到临时文件
 	isUploaded := false
+
 	// 查询已上传的分片文件
 	for message := range client.ListObjects(bucketname, identifier+"_"+chunkSize, true, doneCh) {
 		arr := strings.Split(message.Key, "/")
@@ -500,54 +490,39 @@ reUpload:
 				park_name = key_arr[0]
 			}
 		}
-
+		// 标记分片已上传状态
 		if park_name == chunkNumber {
 			isUploaded = true
 		}
 
 		if v, err := strconv.Atoi(park_name); err == nil && v > 0 && v <= total_chunks {
-			shardPaths = append(shardPaths, message.Key)
+			shardPaths = append(shardPaths, SrcInfo{
+				Name: message.Key,
+				Etag: message.ETag,
+			})
 			have_uploaded_count += 1
 			have_uploaded_size += message.Size
 		}
+		res.Code = CodeSuccess
 		res.Msg = "继续上传"
-
-		// fmt.Println("have_uploaded_size==", have_uploaded_size)
-		// fmt.Println("total_size==", total_size)
-		// fmt.Println("have_uploaded_count==", have_uploaded_count)
-		// fmt.Println("total_chunks==", total_chunks)
-		// fmt.Println("muxing==", muxing)
+		if _, ok := muxing[identifier]; !ok {
+			muxing[identifier] = false
+		}
 		// 合并临时文件
-		if have_uploaded_size == total_size && int(have_uploaded_count) == total_chunks && !muxing {
-			muxing = true
-			res.Msg = "开始合并"
-			err := mergeShards(client, bucketname, filename, shardPaths)
+		if have_uploaded_size == total_size && int(have_uploaded_count) == total_chunks && !muxing[identifier] {
+			muxing[identifier] = true
+			logx.Info("开始合并")
+			err := ComposeObject(bucketname, filename, identifier, shardPaths)
+			// 文件合并失败
 			if err != nil {
 				res.Msg = "merge file error: " + err.Error()
 				res.Code = CodeInternalServerError
+				muxing[identifier] = false
 				httpx.OkJson(w, res)
 				return
 			} else {
-				// 保存
-				data := &FileSaveInfo{
-					BucketName: bucketname,
-					ObjectName: filename,
-				}
-				err := redisdb.Set(identifier, data, 0).Err()
-				if err != nil {
-					log.Println("Error：", err.Error())
-				}
-				res.Msg = "合并成功"
-				res.Code = CodeSuccess
-				res.Data = struct {
-					BucketName string
-					ObjectName string
-				}{
-					BucketName: bucketname,
-					ObjectName: filename,
-				}
+				// 完成上传
 				finished = true
-				muxing = false
 			}
 		}
 	}
@@ -556,7 +531,7 @@ reUpload:
 	retry := 0
 	// 丢失临时文件
 	if !isUploaded {
-		log.Println("临时文件丢失，正在重新上传！")
+		logx.Error("临时文件丢失，正在重新上传！")
 		delete(is_exists_key[identifier+"_"+chunkSize], chunkNumber+".part")
 		retry++
 		if retry > 4 {
@@ -568,74 +543,40 @@ reUpload:
 		goto reUpload
 	}
 
+	// 检查文件是否已经合并完成
 	if finished {
-		log.Println("Finished")
+		logx.Info("Finished")
 		// 删除临时文件
 		removeObjectList(shardPaths, bucketname)
-		// 删除map
-		delete(is_exists_key, identifier+"_"+chunkSize)
+		// 检查文件
+		info, err := GetStatObject(bucketname, filename)
+		if err != nil {
+			logx.Error("查询上传记录:%s\n", err.Error())
+			finished = false
+			muxing[identifier] = false
+			res.Code = CodeInternalServerError
+			res.Msg = CodeInternalServerError.Msg()
+			res.Data = nil
+		} else {
+			// 标记md5值，后续处理相同md5值的文件
+			err := redisdb.Set(identifier, info, 0).Err()
+			if err != nil {
+				logx.Info("Set Error：", err.Error())
+			}
+
+			// 标记桶名、文件名,后续处理同名但是MD5值不同的文件
+			err = redisdb.HSet(bucketname, filename, info).Err()
+			if err != nil {
+				logx.Info("HSet Error：", err.Error())
+			}
+
+			res.Code = CodeSuccess
+			res.Msg = CodeSuccess.Msg()
+			res.Data = info
+			delete(is_exists_key, identifier+"_"+chunkSize)
+			delete(muxing, identifier)
+		}
 	}
 
 	httpx.OkJson(w, res)
-}
-
-// 批量删除文件
-func removeObjectList(paths []string, bucketname string) error {
-	fileCh := make(chan string, len(paths))
-	defer close(fileCh)
-	for _, file := range paths {
-		fileCh <- file
-	}
-	ch := client.RemoveObjects(bucketname, fileCh)
-	select {
-	case err := <-ch:
-		if err.Err != nil {
-			return err.Err
-		}
-	default:
-		fmt.Println("success")
-	}
-	return nil
-}
-
-// 合并文件
-func mergeShards(client *minio.Client, bucketName string, objectName string, shardPaths []string) error {
-	sort.SliceStable(shardPaths, partSort(shardPaths))
-	// 创建目标文件
-	file, err := os.Create("merged_object") // 这里的 "merged_object" 为最终合并后的文件名
-	if err != nil {
-		return fmt.Errorf("无法创建目标文件: %w", err)
-	}
-	defer file.Close()
-	for _, path := range shardPaths {
-		// 打开每个分片文件
-		partFile, err := client.GetObject(bucketName, path, minio.GetObjectOptions{})
-		if err != nil {
-			return fmt.Errorf("无法获取分片文件 '%s': %w", path, err)
-		}
-		defer partFile.Close()
-
-		_, err = io.Copy(file, partFile)
-		if err != nil {
-			return fmt.Errorf("无法将分片内容复制到目标文件: %w", err)
-		}
-	}
-	_, err = client.FPutObject(bucketName, objectName, "merged_object", minio.PutObjectOptions{ContentType: "application/octet-stream"})
-	if err != nil {
-		return fmt.Errorf("无法上传合并后的文件到 MinIO: %w", err)
-	}
-	return nil
-}
-
-// 自定义排序
-func partSort(shardPaths []string) func(int, int) bool {
-	return func(i, j int) bool {
-		tmp_i := strings.Split(shardPaths[i], "/")[1]
-		tmp_j := strings.Split(shardPaths[j], "/")[1]
-		num_i := strings.Split(tmp_i, ".")[0]
-		num_j := strings.Split(tmp_j, ".")[0]
-		a, _ := strconv.Atoi(num_i)
-		b, _ := strconv.Atoi(num_j)
-		return a < b
-	}
 }

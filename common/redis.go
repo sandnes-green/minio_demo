@@ -1,6 +1,9 @@
 package common
 
 import (
+	"fmt"
+	"minio_demo/config"
+	"strconv"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -8,16 +11,17 @@ import (
 
 var redisdb *redis.Client
 
-func init() {
+func InitRedis() {
 	redisdb = redis.NewClient(&redis.Options{
-		Addr:         "192.168.3.11:6379",
-		Password:     "25892326-cfWF",
+		Addr:         config.ConfData.Redis.Address + ":" + strconv.Itoa(config.ConfData.Redis.Port),
+		Password:     config.ConfData.Redis.Password,
 		DialTimeout:  10 * time.Second,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		PoolSize:     10,
 		PoolTimeout:  30 * time.Second,
 	})
+	fmt.Println(config.ConfData.Redis.Address + ":" + strconv.Itoa(config.ConfData.Redis.Port))
 }
 
 func GetClient() *redis.Client {

@@ -6,6 +6,7 @@ require (
 	github.com/go-redis/redis v6.15.9+incompatible
 	github.com/minio/minio-go v6.0.14+incompatible
 	github.com/zeromicro/go-zero v1.6.1
+	github.com/zituocn/logx v0.0.5
 	sigs.k8s.io/yaml v1.3.0
 )
 
